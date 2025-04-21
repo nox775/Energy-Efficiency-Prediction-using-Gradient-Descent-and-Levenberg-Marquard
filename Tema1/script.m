@@ -1,0 +1,256 @@
+clc;
+clear;
+
+%% 1. Încărcare date
+data = readtable('ENB2012_data.xlsx');
+A = table2array(data(:, 1:8));     % Caracteristici (features)
+HL = table2array(data(:, 9));      % Heating Load (target)
+
+%% 2. Normalizare caracteristici (zero mean, unit variance)
+A = normalize(A);
+
+%% 3. Împărțire train/test (80% / 20%)
+cv = cvpartition(size(A,1), 'HoldOut', 0.2);
+A_train = A(training(cv), :);
+HL_train = HL(training(cv));
+A_test  = A(test(cv), :);
+HL_test = HL(test(cv));
+
+%% 4. Adăugare bias (coloană de 1) la final
+A_train = [A_train, ones(size(A_train, 1), 1)];
+A_test  = [A_test,  ones(size(A_test, 1),  1)];
+
+%% 5. Inițializare date
+[n_measure, n_features] = size(A_train);  % n_features include bias
+m_neurons = 16;
+
+X = randn(n_features, m_neurons);     % greutăți input → hidden
+x = randn(m_neurons, 1);              % greutăți hidden → output
+
+%% 6. Gradient Descent
+
+%Initializare date GD
+eps_gd = 1e-5;
+iter1 = 1;
+maxIter1 = 150000;
+
+x_gd = x;
+x_gd_new = zeros(m_neurons, 1);
+X_gd = X;
+X_gd_new = zeros(n_features, m_neurons);
+
+condition_gd = ones(2,1);
+alfa_gd = 0.01;
+
+eroare_gd_input = [];
+eroare_gd_output = [];
+
+loss_function = [];
+
+time_gd = [];
+
+grad_x_old_gd=0;
+grad_X_old_gd=0;
+
+while (condition_gd(1) > eps_gd || condition_gd(2) > eps_gd) && iter1 < maxIter1
+
+    tic;
+
+    %Calcul gradienti
+    grad_x_gd=gradient_x_big(A_train, X_gd, x_gd, HL_train);
+    grad_X_gd=gradient_x(A_train, X_gd, x_gd, HL_train);
+
+    %Aplicare metoda
+    X_gd_new = X_gd - alfa_gd * grad_x_gd;
+    x_gd_new = x_gd - alfa_gd * grad_X_gd;
+
+    %Calcul conditie oprire
+    condition_gd(1) = norm(grad_X_old_gd-grad_X_gd);
+    condition_gd(2) = norm(grad_x_old_gd-grad_x_gd);
+
+    fprintf("Iterația %d: ||ΔX|| = %.6e, ||Δx|| = %.6e\n", iter1, condition_gd(1), condition_gd(2));
+
+    eroare_gd_input  = [eroare_gd_input,  condition_gd(1)];
+    eroare_gd_output = [eroare_gd_output, condition_gd(2)];
+
+    % Evaluează predicția cu X_gd_new și x_gd_new
+    y_pred = siglin(A_train * X_gd_new) * x_gd_new;
+
+    % Evalueare loss
+    val_loss = loss(HL_train, y_pred);
+    loss_function = [loss_function, val_loss];
+
+    % Actualizare date
+    iter1 = iter1 + 1;
+   
+    X_gd = X_gd_new;
+    x_gd = x_gd_new;
+
+    grad_x_old_gd=grad_x_gd;
+    grad_X_old_gd=grad_X_gd;
+
+    time_gd = [time_gd, toc];
+end
+
+%% Timp Total
+total_time_gd=cumsum(time_gd);
+%% 7. Metoda Levenberg-Marquardt
+eps_lm = 1e-3;
+iter2 = 0;
+maxIter2 = 150000;
+
+x_lm = x;
+x_lm_new = zeros(m_neurons, 1);
+X_lm = X;
+X_lm_new = zeros(n_features, m_neurons);
+
+condition_lm = ones(2,1);
+alfa_lm = 1;
+beta_lm = 1e-5;
+
+eroare_lm_input = [];
+eroare_lm_output = [];
+loss_function_lm = [];
+time_lm = [];
+
+grad_x_old_lm = 0;
+grad_X_old_lm = 0;
+
+while (condition_lm(1) > eps_lm || condition_lm(2) > eps_lm) && iter2 < maxIter2
+    tic;
+
+    % Salvează vechii parametri
+    X_lm_old = X_lm;
+    x_lm_old = x_lm;
+
+    % Loss anterior
+    y_pred = siglin(A_train * X_lm) * x_lm;
+    val_loss = loss(HL_train, y_pred);
+
+    % Jacobieni
+    [F_x, J_x, F_X, J_X] = jacobian(@loss, X_lm, x_lm, A_train, HL_train);
+
+    % Gradient LM
+    grad_x_lm = J_x' * F_x;
+    grad_X_lm = J_X' * F_X;
+
+    % Update x
+    x_lm_new = x_lm - alfa_lm * ((J_x' * J_x + beta_lm * eye(m_neurons)) \ grad_x_lm);
+
+    % Update X
+    X_lm_vec = X_lm(:);
+    X_lm_vec = X_lm_vec - alfa_lm * ((J_X' * J_X + beta_lm * eye(n_features * m_neurons)) \ grad_X_lm);
+    X_lm_new = reshape(X_lm_vec, n_features, m_neurons);
+
+    % Norme pe gradient
+    condition_lm(1) = norm(grad_X_old_lm - grad_X_lm);
+    condition_lm(2) = norm(grad_x_old_lm - grad_x_lm);
+
+    fprintf("Iterația %d: ||ΔX|| = %.6e, ||Δx|| = %.6e\n", iter2, condition_lm(1), condition_lm(2));
+
+    eroare_lm_input  = [eroare_lm_input, condition_lm(1)];
+    eroare_lm_output = [eroare_lm_output, condition_lm(2)];
+
+    % Evaluare loss după update
+    y_pred_new = siglin(A_train * X_lm_new) * x_lm_new;
+    val_loss_new = loss(HL_train, y_pred_new);
+
+    % Adaptare beta și alfa
+    if val_loss_new < val_loss
+        beta_lm = beta_lm / 1.5;
+        alfa_lm = alfa_lm * 1.05;
+    else
+        beta_lm = beta_lm * 1.5;
+        alfa_lm = alfa_lm * 0.5;
+
+        % Revenire la vechii parametri (corect)
+        X_lm_new = X_lm;
+        x_lm_new = x_lm;
+        y_pred_new = y_pred;
+        val_loss_new = val_loss;
+    end
+
+    % Update general
+    loss_function_lm = [loss_function_lm, val_loss_new];
+    X_lm = X_lm_new;
+    x_lm = x_lm_new;
+
+    grad_x_old_lm = grad_x_lm;
+    grad_X_old_lm = grad_X_lm;
+
+    time_lm = [time_lm, toc];
+    iter2 = iter2 + 1;
+end
+
+%% Timp Total
+total_time_lm=cumsum(time_lm);
+%% 8. Grafic Eroare Weight Input & Output Iteratii
+
+%Weight Input (X) Error Comparatie
+figure('Name','Comparatie GD-LM - input');
+grid on;
+semilogx(1:iter1-1,eroare_gd_input(1:iter1-1),'b');
+hold on;
+semilogx(1:iter2-1,eroare_lm_input(1:iter2-1),'r');
+xlabel('Iteratii'); ylabel('Norma Gradientului');
+legend('Weight Input Error-GD','Weight Input Error-LM');
+hold off;
+title('Weight Input (X) Error Comparatie');
+
+%Weight Output (x) Error Comparatie
+figure('Name','Comparatie GD-LM - output');
+semilogx(1:iter1-1,eroare_gd_output(1:iter1-1),'b');
+hold on
+semilogx(1:iter2-1,eroare_lm_output(1:iter2-1),'r');
+xlabel('Iteratii'); ylabel('Norma Gradientului');
+legend('Weight Output Error-GD','Weight Output Error-LM');
+hold off;
+title('Weight Output (x) Error Comparatie')
+
+%% 9. Grafic Eroare Weight Input & Output Timp
+
+figure;
+grid on;
+semilogx(total_time_gd,eroare_gd_input,'b');
+hold on;
+semilogx(total_time_lm,eroare_lm_output,'g');
+hold off;
+xlabel('Timp (s)'); ylabel('Norma Gradientului');
+legend('Weight Input Error-GD','Weight Input Error-LM');
+
+figure;
+grid on;
+semilogx(total_time_lm,eroare_lm_input,'b');
+hold on;
+semilogx(total_time_gd,eroare_gd_output,'g');
+
+hold off;
+xlabel('Timp (s)'); ylabel('Norma Gradientului');
+legend('Weight Output Error-GD','Weight Output Error-LM');
+
+
+%% 10. Evolutia Loss Gradient Descent Iteratii
+figure
+semilogx(1:iter1-1,loss_function(1:iter1-1),'g');
+hold on;
+semilogx(1:iter2-1,loss_function_lm(1:iter2-1),'r');
+xlabel('Iteratii'); ylabel('Loss');
+legend('Loss-GD','Loss-LM')
+hold off;
+%% 11. Evolutia Loss Gradient Descent Timp
+figure
+semilogx(total_time_gd,loss_function,'g');
+hold on;
+semilogx(total_time_lm,loss_function_lm,'r');
+xlabel('Timp (s)'); ylabel('Loss');
+legend('Loss-GD','Loss-LM')
+hold off;
+
+%% 12. Testare Gradient Descent
+
+y_pred = siglin(A_test * X_gd_new) * x_gd_new;
+R_gd=R2(y_pred,HL_test)
+%% 13. Testare Levenberg-Marquardt
+
+y_pred = siglin(A_test * X_lm_new) * x_lm_new;
+R_lm=R2(y_pred,HL_test)
